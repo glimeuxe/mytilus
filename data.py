@@ -70,24 +70,24 @@ class MeshDataset(Dataset):
 		target_vertices, target_faces = load_obj(output_path)
 
 		# initialize mask once, then perform efficient calculation
-		ground_truth_thickening_mask = torch.zeros(len(faces), 1, dtype=torch.float32)
+		target_thickening_mask = torch.zeros(len(faces), 1, dtype=torch.float32)
 		target_faces_set = {tuple(sorted(face_tuple.tolist())) for face_tuple in target_faces}
-		ground_truth_thickening_indices = [i for i, f in enumerate(faces) if tuple(sorted(f.tolist())) not in target_faces_set]
-		if ground_truth_thickening_indices:
-			ground_truth_thickening_mask[ground_truth_thickening_indices] = 1.0
+		target_thickening_indices = [i for i, f in enumerate(faces) if tuple(sorted(f.tolist())) not in target_faces_set]
+		if target_thickening_indices:
+			target_thickening_mask[target_thickening_indices] = 1.0
 
 		# center vertices first
 		center = vertices.mean(dim=0)
 		vertices = vertices - center
 		target_vertices = target_vertices - center
 
-		# compute ground-truth magnitudes for regression target
+		# compute target magnitudes for regression target
 		# measure distance from each input vertex to nearest point on target surface
-		ground_truth_magnitudes = torch.zeros(len(faces), 1, dtype=torch.float32)
+		target_magnitudes = torch.zeros(len(faces), 1, dtype=torch.float32)
 		if vertices.numel() > 0 and target_vertices.numel() > 0 and faces.numel() > 0:
 			vertex_distances = torch.tensor(scipy.spatial.KDTree(target_vertices.numpy()).query(vertices.numpy(), k=1)[0], dtype=torch.float32).unsqueeze(1)
-			# average distances of face's vertices to get per-face ground truth magnitude
-			ground_truth_magnitudes = torch.mean(vertex_distances[faces], dim=1)
+			# average distances of face's vertices to get per-face target magnitude
+			target_magnitudes = torch.mean(vertex_distances[faces], dim=1)
 
 		# compute average edge length on centered, but not yet scaled, mesh
 		average_edge_length = torch.tensor(0.0, dtype=torch.float32)
@@ -99,27 +99,27 @@ class MeshDataset(Dataset):
 				torch.norm(vertex0 - vertex2, dim=1)
 			]).mean()
 
-		# determine normalization scale and calculate per-mesh max thickening
+		# determine normalization scale and calculate per-mesh maximum thickening
 		scale = torch.max(torch.norm(vertices, dim=1))
 		per_mesh_maximum_thickening = torch.tensor(self.configuration["MAX_THICKENING"], dtype=torch.float32)
 		if scale.item() > 1e-8:
 			per_mesh_maximum_thickening = self.configuration["MAX_THICKENING"] * (average_edge_length / scale)
 			vertices = vertices / scale
 			target_vertices = target_vertices / scale
-			ground_truth_magnitudes = ground_truth_magnitudes / scale
+			target_magnitudes = target_magnitudes / scale
 
 		return {
-			"verts": vertices,
+			"vertices": vertices,
 			"faces": faces,
 			"adjacency": get_face_adjacency(faces),
-			"target_verts": target_vertices,
+			"target_vertices": target_vertices,
 			"target_faces": target_faces,
 			"input_path": input_path,
 			"output_path": output_path,
 			"base_name": os.path.basename(input_path).replace("_input.obj", ""),
 			"center": center,
 			"scale": scale,
-			"gt_thicken_mask": ground_truth_thickening_mask,
-			"gt_magnitudes": ground_truth_magnitudes,
-			"max_thickening": per_mesh_maximum_thickening
+			"target_thickening_mask": target_thickening_mask,
+			"target_magnitudes": target_magnitudes,
+			"maximum_thickening": per_mesh_maximum_thickening
 		}

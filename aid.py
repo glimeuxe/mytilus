@@ -12,22 +12,27 @@ def seed_backend(seed_value):
 
 def get_run_hash(configuration):
 	keys_to_hash = [
-		"SEED",
-		"MAX_DATASET_SIZE",
-		"TRAIN_VAL_TEST_RATIO",
-		"MAX_EPOCHS",
-		"LEARNING_RATE",
-		"PATIENCE",
-		"CLASSIFICATION_WEIGHT",
-		"REGRESSION_WEIGHT",
 		"BINARIZATION_WEIGHT",
-		"THICKENING_THRESHOLD",
-		"MAX_THICKENING",
-		"INVERTED_TETRAHEDRA_WEIGHT",
+		"CLASSIFICATION_WEIGHT",
 		"GNN_LAYER_DIMENSIONS",
-		"HEAD_LAYER_DIMENSIONS"
+		"HEAD_LAYER_DIMENSIONS",
+		"INVERTED_TETRAHEDRA_WEIGHT",
+		"LEARNING_RATE",
+		"MAX_DATASET_SIZE",
+		"MAX_EPOCHS",
+		"MAX_THICKENING",
+		"PATIENCE",
+		"REGRESSION_WEIGHT",
+		"SEED",
+		"THICKENING_THRESHOLD",
+		"TRAIN_VAL_TEST_RATIO"
 	]
-	return hashlib.sha256(json.dumps({key: configuration[key] for key in sorted(keys_to_hash) if key in configuration}, sort_keys=True).encode()).hexdigest()[:16]
+	return hashlib.sha256(
+		json.dumps(
+			{key: configuration[key] for key in sorted(keys_to_hash) if key in configuration},
+			sort_keys=True
+		).encode()
+	).hexdigest()[:16]
 
 def log_run(log_path, run_independent_variables, run_dependent_variables, is_dry_run=False):
 	all_runs = []

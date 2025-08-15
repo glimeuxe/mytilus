@@ -32,22 +32,22 @@ def compute_vertex_normals(vertices, faces):
 	return nn.functional.normalize(vertex_normals, p=2, dim=1)
 
 class NeuralThickeningNet(nn.Module):
-	def __init__(self, graph_neural_network_layer_dimensions, prediction_head_layer_dimensions):
+	def __init__(self, gnn_layer_dimensions, head_layer_dimensions):
 		super(NeuralThickeningNet, self).__init__()
 		initial_features = 8 # define features: center(3), normal(3), area(1), curvature(1)
 		layers = []
 		input_dimension = initial_features
-		for output_dimension in graph_neural_network_layer_dimensions:
+		for output_dimension in gnn_layer_dimensions:
 			layers.append(GNNLayer(input_dimension, output_dimension))
 			input_dimension = output_dimension
-		self.graph_neural_network_stack = nn.ModuleList(layers)
+		self.gnn_stack = nn.ModuleList(layers)
 
 		# double head input dimension to accommodate global context vector
-		prediction_head_input_dimension = (graph_neural_network_layer_dimensions[-1] if graph_neural_network_layer_dimensions else initial_features) * 2
+		head_input_dimension = (gnn_layer_dimensions[-1] if gnn_layer_dimensions else initial_features) * 2
 
-		# build prediction heads dynamically based on prediction_head_layer_dimensions
-		self.classification_head = self._create_head(prediction_head_input_dimension, prediction_head_layer_dimensions, add_sigmoid_layer=True)
-		self.regression_head = self._create_head(prediction_head_input_dimension, prediction_head_layer_dimensions, add_sigmoid_layer=True)
+		# build prediction heads dynamically based on head_layer_dimensions
+		self.classification_head = self._create_head(head_input_dimension, head_layer_dimensions, add_sigmoid_layer=True)
+		self.regression_head = self._create_head(head_input_dimension, head_layer_dimensions, add_sigmoid_layer=True)
 
 	def _create_head(self, input_dimension, hidden_dimensions, add_sigmoid_layer=False):
 		layers = []
@@ -61,7 +61,7 @@ class NeuralThickeningNet(nn.Module):
 			layers.append(nn.Sigmoid())
 		return nn.Sequential(*layers)
 
-	def forward(self, vertices, faces, adjacency, max_thickening, use_hard_thickening=False, thickening_threshold=0.5):
+	def forward(self, vertices, faces, adjacency, maximum_thickening, use_hard_thickening=False, thickening_threshold=0.5):
 		if faces.numel() == 0 or vertices.numel() == 0:
 			# return empty tensors for all 5 expected outputs
 			return (
@@ -85,7 +85,7 @@ class NeuralThickeningNet(nn.Module):
 			torch.norm(torch.cross(face_vertices[:, 1] - face_vertices[:, 0], face_vertices[:, 2] - face_vertices[:, 0], dim=1), dim=1, keepdim=True) / 2.0,
 			(1.0 - average_dot_product).unsqueeze(-1)
 		], dim=1)
-		for layer in self.graph_neural_network_stack:
+		for layer in self.gnn_stack:
 			feature_tensor = layer(feature_tensor, adjacency)
 
 		# add global context vector to features of each face
@@ -94,7 +94,7 @@ class NeuralThickeningNet(nn.Module):
 			feature_tensor = torch.cat([feature_tensor, global_context_vector_expanded], dim=1)
 
 		thickening_probabilities = self.classification_head(feature_tensor)
-		thickening_magnitudes = self.regression_head(feature_tensor) * max_thickening
+		thickening_magnitudes = self.regression_head(feature_tensor) * maximum_thickening
 		vertex_normals = compute_vertex_normals(vertices, faces)
 		if use_hard_thickening:
 			output_vertices, output_faces = self._hard_thicken(vertices, faces, thickening_probabilities, thickening_magnitudes, vertex_normals, thickening_threshold)

@@ -87,20 +87,20 @@ def train(configuration, training_loader, validation_loader, run_identifier, dev
 			model.train()
 			epoch_training_loss = 0.0
 			for batch in training_loader:
-				vertices, faces, adjacency, ground_truth_mask, ground_truth_magnitudes, maximum_thickening = (
-					batch["verts"][0].to(device), batch["faces"][0].to(device),
-					batch["adjacency"][0].to(device), batch["gt_thicken_mask"][0].to(device),
-					batch["gt_magnitudes"][0].to(device), batch["max_thickening"][0].to(device)
+				vertices, faces, adjacency, target_mask, target_magnitudes, maximum_thickening = (
+					batch["vertices"][0].to(device), batch["faces"][0].to(device),
+					batch["adjacency"][0].to(device), batch["target_thickening_mask"][0].to(device),
+					batch["target_magnitudes"][0].to(device), batch["maximum_thickening"][0].to(device)
 				)
 				optimizer.zero_grad()
 				_, _, thickening_probabilities, thickening_magnitudes, vertex_normals = model(vertices, faces, adjacency, maximum_thickening)
 				loss = torch.tensor(0.0, device=device)
 				if thickening_probabilities.numel() > 0:
 					displaced_vertices = model.differentiable_displace_vertices(vertices, faces, vertex_normals, thickening_probabilities, thickening_magnitudes)
-					ground_truth_mask_boolean = ground_truth_mask.squeeze().bool()
+					target_mask_boolean = target_mask.squeeze().bool()
 					loss = (
-						configuration["CLASSIFICATION_WEIGHT"] * nn.functional.binary_cross_entropy(thickening_probabilities, ground_truth_mask) +
-						(configuration["REGRESSION_WEIGHT"] * nn.functional.mse_loss(thickening_magnitudes[ground_truth_mask_boolean], ground_truth_magnitudes[ground_truth_mask_boolean]) if ground_truth_mask_boolean.any() else 0.0) +
+						configuration["CLASSIFICATION_WEIGHT"] * nn.functional.binary_cross_entropy(thickening_probabilities, target_mask) +
+						(configuration["REGRESSION_WEIGHT"] * nn.functional.mse_loss(thickening_magnitudes[target_mask_boolean], target_magnitudes[target_mask_boolean]) if target_mask_boolean.any() else 0.0) +
 						configuration["BINARIZATION_WEIGHT"] * torch.mean(thickening_probabilities * (1 - thickening_probabilities)) +
 						configuration["INVERTED_TETRAHEDRA_WEIGHT"] * inverted_tetrahedra_loss(vertices, faces, displaced_vertices)
 					)
@@ -115,19 +115,19 @@ def train(configuration, training_loader, validation_loader, run_identifier, dev
 			epoch_validation_loss = 0.0
 			with torch.no_grad():
 				for batch in validation_loader:
-					vertices, faces, adjacency, ground_truth_mask, ground_truth_magnitudes, maximum_thickening = (
-						batch["verts"][0].to(device), batch["faces"][0].to(device),
-						batch["adjacency"][0].to(device), batch["gt_thicken_mask"][0].to(device),
-						batch["gt_magnitudes"][0].to(device), batch["max_thickening"][0].to(device)
+					vertices, faces, adjacency, target_mask, target_magnitudes, maximum_thickening = (
+						batch["vertices"][0].to(device), batch["faces"][0].to(device),
+						batch["adjacency"][0].to(device), batch["target_thickening_mask"][0].to(device),
+						batch["target_magnitudes"][0].to(device), batch["maximum_thickening"][0].to(device)
 					)
 					_, _, thickening_probabilities, thickening_magnitudes, vertex_normals = model(vertices, faces, adjacency, maximum_thickening)
 					loss = torch.tensor(0.0, device=device)
 					if thickening_probabilities.numel() > 0:
 						displaced_vertices = model.differentiable_displace_vertices(vertices, faces, vertex_normals, thickening_probabilities, thickening_magnitudes)
-						ground_truth_mask_boolean = ground_truth_mask.squeeze().bool()
+						target_mask_boolean = target_mask.squeeze().bool()
 						loss = (
-							configuration["CLASSIFICATION_WEIGHT"] * nn.functional.binary_cross_entropy(thickening_probabilities, ground_truth_mask) +
-							(configuration["REGRESSION_WEIGHT"] * nn.functional.mse_loss(thickening_magnitudes[ground_truth_mask_boolean], ground_truth_magnitudes[ground_truth_mask_boolean]) if ground_truth_mask_boolean.any() else 0.0) +
+							configuration["CLASSIFICATION_WEIGHT"] * nn.functional.binary_cross_entropy(thickening_probabilities, target_mask) +
+							(configuration["REGRESSION_WEIGHT"] * nn.functional.mse_loss(thickening_magnitudes[target_mask_boolean], target_magnitudes[target_mask_boolean]) if target_mask_boolean.any() else 0.0) +
 							configuration["BINARIZATION_WEIGHT"] * torch.mean(thickening_probabilities * (1 - thickening_probabilities)) +
 							configuration["INVERTED_TETRAHEDRA_WEIGHT"] * inverted_tetrahedra_loss(vertices, faces, displaced_vertices)
 						)
@@ -190,8 +190,8 @@ def main():
 		print("[WARNING] Running in dry run mode. No files will be written.")
 	os.makedirs(CONFIG["RUNS_PATH"], exist_ok=True)
 	architecture_parameters = {
-		"graph_neural_network_layer_dimensions": CONFIG["GNN_LAYER_DIMENSIONS"],
-		"prediction_head_layer_dimensions": CONFIG["HEAD_LAYER_DIMENSIONS"],
+		"gnn_layer_dimensions": CONFIG["GNN_LAYER_DIMENSIONS"],
+		"head_layer_dimensions": CONFIG["HEAD_LAYER_DIMENSIONS"],
 	}
 	try:
 		file_pairs = get_file_pairs(CONFIG)
