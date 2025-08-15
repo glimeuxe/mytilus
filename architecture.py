@@ -99,23 +99,29 @@ class NeuralThickeningNet(nn.Module):
 		if use_hard_thickening:
 			output_vertices, output_faces = self._hard_thicken(vertices, faces, thickening_probabilities, thickening_magnitudes, vertex_normals, thickening_threshold)
 		else:
-			output_vertices, output_faces = self._soft_thicken(vertices, faces, thickening_probabilities, thickening_magnitudes, vertex_normals)
+			# During training, the mesh geometry is ignored, so we return the original mesh.
+			# The differentiable displacement is calculated separately for the loss function.
+			output_vertices, output_faces = vertices, faces
 		return output_vertices, output_faces, thickening_probabilities, thickening_magnitudes, vertex_normals
 
-	def _soft_thicken(self, vertices, faces, face_probabilities, face_magnitudes, vertex_normals):
+	def differentiable_displace_vertices(self, vertices, faces, vertex_normals, thickening_probabilities, thickening_magnitudes):
+		# average face properties to vertices
 		vertex_to_face_probabilities = torch.zeros(vertices.shape[0], 1, device=vertices.device)
 		vertex_to_face_magnitudes = torch.zeros(vertices.shape[0], 1, device=vertices.device)
 		vertex_counts = torch.zeros(vertices.shape[0], 1, device=vertices.device)
+
 		for index in range(3):
 			vertex_indices = faces[:, index]
-			vertex_to_face_probabilities.index_add_(0, vertex_indices, face_probabilities)
-			vertex_to_face_magnitudes.index_add_(0, vertex_indices, face_magnitudes)
-			vertex_counts.index_add_(0, vertex_indices, torch.ones_like(face_probabilities))
+			vertex_to_face_probabilities.index_add_(0, vertex_indices, thickening_probabilities)
+			vertex_to_face_magnitudes.index_add_(0, vertex_indices, thickening_magnitudes)
+			vertex_counts.index_add_(0, vertex_indices, torch.ones_like(thickening_probabilities))
+
 		vertex_counts = vertex_counts.clamp(min=1)
+		vertex_probabilities = vertex_to_face_probabilities / vertex_counts
 		vertex_magnitudes = vertex_to_face_magnitudes / vertex_counts
-		vertex_offsets = vertex_magnitudes * vertex_normals
-		new_vertices_positions = vertices + (vertex_to_face_probabilities / vertex_counts) * vertex_offsets
-		return torch.cat([vertices, new_vertices_positions], dim=0), faces
+
+		# compute displaced vertices
+		return vertices + (vertex_probabilities * vertex_magnitudes * vertex_normals)
 
 	def _hard_thicken(self, vertices, faces, probabilities, magnitudes, vertex_normals, thickening_threshold):
 		faces_to_thicken_mask = (probabilities.squeeze(-1) > thickening_threshold)

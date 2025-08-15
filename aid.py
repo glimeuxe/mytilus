@@ -16,7 +16,7 @@ def get_run_hash(configuration):
 		"MAX_DATASET_SIZE",
 		"TRAIN_VAL_TEST_RATIO",
 		"MAX_EPOCHS",
-		"LR",
+		"LEARNING_RATE",
 		"PATIENCE",
 		"CLASSIFICATION_WEIGHT",
 		"REGRESSION_WEIGHT",

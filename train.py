@@ -15,25 +15,6 @@ from architecture import *
 from data import *
 from infer import *
 
-def _compute_displaced_vertices(vertices, faces, vertex_normals, thickening_probabilities, thickening_magnitudes):
-	# average face properties to vertices
-	vertex_to_face_probabilities = torch.zeros(vertices.shape[0], 1, device=vertices.device)
-	vertex_to_face_magnitudes = torch.zeros(vertices.shape[0], 1, device=vertices.device)
-	vertex_counts = torch.zeros(vertices.shape[0], 1, device=vertices.device)
-
-	for index in range(3):
-		vertex_indices = faces[:, index]
-		vertex_to_face_probabilities.index_add_(0, vertex_indices, thickening_probabilities)
-		vertex_to_face_magnitudes.index_add_(0, vertex_indices, thickening_magnitudes)
-		vertex_counts.index_add_(0, vertex_indices, torch.ones_like(thickening_probabilities))
-
-	vertex_counts = vertex_counts.clamp(min=1)
-	vertex_probabilities = vertex_to_face_probabilities / vertex_counts
-	vertex_magnitudes = vertex_to_face_magnitudes / vertex_counts
-
-	# compute displaced vertices
-	return vertices + (vertex_probabilities * vertex_magnitudes * vertex_normals)
-
 def inverted_tetrahedra_loss(vertices, faces, displaced_vertices):
 	if faces.numel() == 0:
 		return torch.tensor(0.0, device=vertices.device)
@@ -68,30 +49,40 @@ def create_dataloaders(file_pairs, configuration):
 	)
 
 def train(configuration, training_loader, validation_loader, run_identifier, device, architecture_parameters, is_dry_run=False):
+	run_path = os.path.join(configuration["RUNS_PATH"], run_identifier)
+	if not is_dry_run:
+		os.makedirs(run_path, exist_ok=True)
 	model = NeuralThickeningNet(**architecture_parameters).to(device)
-	optimizer = optim.AdamW(model.parameters(), lr=configuration["LR"])
+	optimizer = optim.AdamW(model.parameters(), lr=configuration["LEARNING_RATE"])
 	scheduler = ReduceLROnPlateau(
 		optimizer, "min",
 		patience=configuration["PATIENCE"] // 2,
 		factor=0.5
 	)
-	training_history = {"train_loss": [], "val_loss": [], "lr": []}
+	training_history = {"training_loss": [], "validation_loss": [], "learning_rate": []}
 	best_validation_loss = float("inf")
 	epochs_without_improvement = 0
 	final_epoch_number = 0
-	best_model_path = os.path.join(configuration["WEIGHTS_PATH"], f"{run_identifier}.pt")
+	best_model_path = os.path.join(run_path, "weights.pt")
 	with Progress(
 		TextColumn("{task.description}"), BarColumn(bar_width=30),
 		TextColumn("[progress.percentage]{task.percentage:>3.0f}%"), TimeElapsedColumn(),
-		TextColumn("Train Loss: {task.fields[train_loss]}"),
-		TextColumn("Val Loss: {task.fields[val_loss]}"),
-		TextColumn("LR: {task.fields[lr]}"),
-		TextColumn("ESC: {task.fields[esc]}"),
+		TextColumn("Training Loss: {task.fields[training_loss]}"),
+		TextColumn("Validation Loss: {task.fields[validation_loss]}"),
+		TextColumn("Learning Rate: {task.fields[learning_rate]}"),
+		TextColumn("Early Stopping Counter: {task.fields[early_stopping_counter]}"),
 	) as progress:
-		epoch_progress_task = progress.add_task("[cyan]Training", total=configuration["MAX_EPOCHS"], train_loss="NA", val_loss="NA", lr="NA", esc="0")
+		epoch_progress_task = progress.add_task(
+			"[cyan]Training",
+			total=configuration["MAX_EPOCHS"],
+			training_loss="NA",
+			validation_loss="NA",
+			learning_rate="NA",
+			early_stopping_counter="0"
+		)
 		for epoch_index in range(configuration["MAX_EPOCHS"]):
 			final_epoch_number = epoch_index + 1
-			training_history["lr"].append(optimizer.param_groups[0]["lr"])
+			training_history["learning_rate"].append(optimizer.param_groups[0]["lr"])
 
 			model.train()
 			epoch_training_loss = 0.0
@@ -105,7 +96,7 @@ def train(configuration, training_loader, validation_loader, run_identifier, dev
 				_, _, thickening_probabilities, thickening_magnitudes, vertex_normals = model(vertices, faces, adjacency, maximum_thickening)
 				loss = torch.tensor(0.0, device=device)
 				if thickening_probabilities.numel() > 0:
-					displaced_vertices = _compute_displaced_vertices(vertices, faces, vertex_normals, thickening_probabilities, thickening_magnitudes)
+					displaced_vertices = model.differentiable_displace_vertices(vertices, faces, vertex_normals, thickening_probabilities, thickening_magnitudes)
 					ground_truth_mask_boolean = ground_truth_mask.squeeze().bool()
 					loss = (
 						configuration["CLASSIFICATION_WEIGHT"] * nn.functional.binary_cross_entropy(thickening_probabilities, ground_truth_mask) +
@@ -118,7 +109,7 @@ def train(configuration, training_loader, validation_loader, run_identifier, dev
 					torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 					optimizer.step()
 					epoch_training_loss += loss.item()
-			training_history["train_loss"].append(epoch_training_loss / len(training_loader))
+			training_history["training_loss"].append(epoch_training_loss / len(training_loader))
 
 			model.eval()
 			epoch_validation_loss = 0.0
@@ -132,7 +123,7 @@ def train(configuration, training_loader, validation_loader, run_identifier, dev
 					_, _, thickening_probabilities, thickening_magnitudes, vertex_normals = model(vertices, faces, adjacency, maximum_thickening)
 					loss = torch.tensor(0.0, device=device)
 					if thickening_probabilities.numel() > 0:
-						displaced_vertices = _compute_displaced_vertices(vertices, faces, vertex_normals, thickening_probabilities, thickening_magnitudes)
+						displaced_vertices = model.differentiable_displace_vertices(vertices, faces, vertex_normals, thickening_probabilities, thickening_magnitudes)
 						ground_truth_mask_boolean = ground_truth_mask.squeeze().bool()
 						loss = (
 							configuration["CLASSIFICATION_WEIGHT"] * nn.functional.binary_cross_entropy(thickening_probabilities, ground_truth_mask) +
@@ -142,7 +133,7 @@ def train(configuration, training_loader, validation_loader, run_identifier, dev
 						)
 					epoch_validation_loss += loss.item()
 			average_validation_loss = epoch_validation_loss / len(validation_loader)
-			training_history["val_loss"].append(average_validation_loss)
+			training_history["validation_loss"].append(average_validation_loss)
 			scheduler.step(average_validation_loss)
 			if average_validation_loss < best_validation_loss:
 				best_validation_loss = average_validation_loss
@@ -155,27 +146,24 @@ def train(configuration, training_loader, validation_loader, run_identifier, dev
 				epoch_progress_task,
 				advance=1,
 				description=f"Epoch {epoch_index + 1}/{configuration['MAX_EPOCHS']}",
-				train_loss=f"{training_history['train_loss'][-1]:.6f}",
-				val_loss=f"{average_validation_loss:.6f}",
-				lr=f"{optimizer.param_groups[0]['lr']:.1E}",
-				esc=f"{epochs_without_improvement}/{configuration['PATIENCE']}"
+				training_loss=f"{training_history['training_loss'][-1]:.6f}",
+				validation_loss=f"{average_validation_loss:.6f}",
+				learning_rate=f"{optimizer.param_groups[0]['lr']:.1E}",
+				early_stopping_counter=f"{epochs_without_improvement}/{configuration['PATIENCE']}"
 			)
 			if epochs_without_improvement >= configuration["PATIENCE"]:
 				print(f"\n[INFO] Early stopping triggered after {configuration['PATIENCE']} epochs.")
 				break
-	run_gallery_path = os.path.join(configuration["GALLERY_PATH"], run_identifier)
-	if not is_dry_run:
-		os.makedirs(run_gallery_path, exist_ok=True)
-	plot_path = os.path.join(run_gallery_path, "losses.png")
+	plot_path = os.path.join(run_path, "losses.png")
 	figure, axis1 = plt.subplots(figsize=(12, 6))
-	axis1.plot(training_history["train_loss"], label="Training Loss", color="tab:blue")
-	axis1.plot(training_history["val_loss"], label="Validation Loss", color="tab:orange")
+	axis1.plot(training_history["training_loss"], label="Training Loss", color="tab:blue")
+	axis1.plot(training_history["validation_loss"], label="Validation Loss", color="tab:orange")
 	axis1.set_xlabel("Epoch")
 	axis1.set_ylabel("Hybrid Loss")
 	axis1.legend(loc="upper left")
 	axis1.grid(True)
 	axis2 = axis1.twinx()
-	axis2.plot(training_history["lr"], label="Learning Rate", color="tab:green", linestyle="--")
+	axis2.plot(training_history["learning_rate"], label="Learning Rate", color="tab:green", linestyle="--")
 	axis2.set_ylabel("Learning Rate", color="tab:green")
 	axis2.tick_params(axis="y", labelcolor="tab:green")
 	axis2.legend(loc="upper right")
@@ -200,8 +188,7 @@ def main():
 	print(f"[INFO] Using {torch.__version__}, {COMPUTATION_DEVICE} | Run ID: {CONFIG['RUN_ID']}.")
 	if is_dry_run:
 		print("[WARNING] Running in dry run mode. No files will be written.")
-	os.makedirs(CONFIG["WEIGHTS_PATH"], exist_ok=True)
-	os.makedirs(CONFIG["GALLERY_PATH"], exist_ok=True)
+	os.makedirs(CONFIG["RUNS_PATH"], exist_ok=True)
 	architecture_parameters = {
 		"graph_neural_network_layer_dimensions": CONFIG["GNN_LAYER_DIMENSIONS"],
 		"prediction_head_layer_dimensions": CONFIG["HEAD_LAYER_DIMENSIONS"],
@@ -222,12 +209,12 @@ def main():
 	if testing_loader and os.path.exists(best_model_path):
 		model = NeuralThickeningNet(**architecture_parameters).to(COMPUTATION_DEVICE)
 		model.load_state_dict(torch.load(best_model_path, map_location=COMPUTATION_DEVICE))
-		run_gallery_path = os.path.join(CONFIG["GALLERY_PATH"], CONFIG["RUN_ID"])
-		watertight_fraction = evaluate(model, testing_loader, run_gallery_path, CONFIG["THICKENING_THRESHOLD"], COMPUTATION_DEVICE, is_dry_run)
+		run_path = os.path.join(CONFIG["RUNS_PATH"], CONFIG["RUN_ID"])
+		watertight_fraction = evaluate(model, testing_loader, run_path, CONFIG["THICKENING_THRESHOLD"], COMPUTATION_DEVICE, is_dry_run)
 	else:
 		print("\n[WARNING] No test data or model path available, skipping evaluation.")
 	run_independent_variables = CONFIG.copy()
-	for key in ["DATASET_PATH", "GALLERY_PATH", "LOG_PATH", "WEIGHTS_PATH"]:
+	for key in ["DATASET_PATH", "LOG_PATH", "RUNS_PATH"]:
 		if key in run_independent_variables:
 			del run_independent_variables[key]
 	run_independent_variables["ARCHITECTURE"] = str(NeuralThickeningNet(**architecture_parameters)).replace("\n", "").replace(" ", "")
@@ -236,8 +223,8 @@ def main():
 		CONFIG["LOG_PATH"],
 		run_independent_variables,
 		{
-			"best_val_loss": best_validation_loss_string,
-			"num_epochs": number_of_epochs,
+			"best_validation_loss": best_validation_loss_string,
+			"number_of_epochs": number_of_epochs,
 			"minutes_trained": int((time.time() - training_start_time) / 60),
 			"watertight_fraction": f"{watertight_fraction:.4f}" if isinstance(watertight_fraction, float) else watertight_fraction,
 		},
